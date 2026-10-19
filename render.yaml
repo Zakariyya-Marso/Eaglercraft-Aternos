@@ -15,10 +15,10 @@ services:
       - key: NODE_VERSION
         value: 20.18.0
       - key: TARGET_HOST
-        sync: false
+        
         # Enter your Minecraft server IP or domain (e.g. myserver.aternos.me or mc.hypixel.net)
         value: myserver.aternos.me
       - key: TARGET_PORT
-        sync: false
+        
         # Enter your Minecraft server port (default vanilla is 25565, Aternos uses dynamic ports like 38472)
         value: "25565"
