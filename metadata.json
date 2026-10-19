@@ -1,0 +1,6 @@
+{
+  "name": "EaglerProxy - Minecraft TCP to WebSocket Relay",
+  "description": "Production-ready high-performance Node.js TCP-to-WebSocket proxy bridging browser-based Eaglercraft clients with vanilla and Aternos Minecraft servers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

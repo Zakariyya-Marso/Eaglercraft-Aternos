@@ -1,0 +1,24 @@
+# Render.com Blueprint Specification for Eaglercraft Minecraft Proxy
+# Documentation: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: eaglercraft-minecraft-proxy
+    runtime: node
+    plan: free # Can be upgraded to 'starter' ($7/mo) for 24/7 zero-spin-down always-on operation
+    region: oregon # Choose: oregon, frankfurt, ohio, singapore
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: TARGET_HOST
+        sync: false
+        # Enter your Minecraft server IP or domain (e.g. myserver.aternos.me or mc.hypixel.net)
+        value: myserver.aternos.me
+      - key: TARGET_PORT
+        sync: false
+        # Enter your Minecraft server port (default vanilla is 25565, Aternos uses dynamic ports like 38472)
+        value: "25565"
