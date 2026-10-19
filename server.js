@@ -4,12 +4,19 @@
  * Production-ready bridge enabling browser-based Minecraft clients (Eaglercraft)
  * to connect directly to standard vanilla, Spigot, Paper, or Aternos TCP servers.
  *
- * Dependencies: ws (npm), net (built-in), http (built-in)
+ * Dependencies: ws (npm), net (built-in), http (built-in), fs (built-in), path (built-in)
  */
 
 import http from 'http';
 import net from 'net';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distDir = path.join(__dirname, 'dist');
 
 // Configuration from Environment Variables with fallbacks
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -26,9 +33,6 @@ const stats = {
   errors: 0,
 };
 
-/**
- * Format bytes to human readable format
- */
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -37,9 +41,6 @@ function formatBytes(bytes) {
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 }
 
-/**
- * Format uptime
- */
 function formatUptime(ms) {
   const seconds = Math.floor(ms / 1000);
   const d = Math.floor(seconds / 86400);
@@ -49,15 +50,29 @@ function formatUptime(ms) {
   return `${d > 0 ? `${d}d ` : ''}${h}h ${m}m ${s}s`;
 }
 
+// MIME types for static assets
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
 /**
- * Minimal HTTP Server for health-checks and status
+ * HTTP Server for Health Checks, API, and Static Website Hosting
  */
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-  // CORS headers for API accessibility
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
@@ -66,36 +81,145 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Health-check / status endpoints
-  if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/healthz' || url.pathname === '/status') {
-    const isJson = req.headers.accept && req.headers.accept.includes('application/json');
+  // 1. Dedicated health-check routes for cloud load balancers / Render
+  if (url.pathname === '/health' || url.pathname === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ status: 'healthy', uptimeSeconds: Math.floor((Date.now() - stats.startTime) / 1000) }));
+    return;
+  }
 
-    const statusData = {
-      status: 'healthy',
-      service: 'eaglercraft-minecraft-proxy',
-      target: {
-        host: DEFAULT_TARGET_HOST,
-        port: DEFAULT_TARGET_PORT,
-      },
-      metrics: {
-        uptime: formatUptime(Date.now() - stats.startTime),
+  // 2. Real-time Status API
+  if (url.pathname === '/api/proxy/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(
+      JSON.stringify({
+        targetHost: DEFAULT_TARGET_HOST,
+        targetPort: DEFAULT_TARGET_PORT,
         uptimeSeconds: Math.floor((Date.now() - stats.startTime) / 1000),
+        startTime: stats.startTime,
         activeConnections: stats.activeConnections,
         totalConnections: stats.totalConnections,
-        bytesForwardedToMinecraft: formatBytes(stats.totalBytesToMinecraft),
-        bytesRelayedToClients: formatBytes(stats.totalBytesToClient),
+        totalBytesToMinecraft: stats.totalBytesToMinecraft,
+        totalBytesToClient: stats.totalBytesToClient,
         errorCount: stats.errors,
-      },
-      timestamp: new Date().toISOString(),
-    };
+        recentLogs: [],
+      })
+    );
+    return;
+  }
 
-    if (isJson || url.pathname === '/status') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(statusData, null, 2));
-      return;
+  // 3. Server-side TCP Connectivity & Handshake Tester
+  if (url.pathname === '/api/proxy/test-connection' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 10000) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const host = (payload.host || DEFAULT_TARGET_HOST).trim();
+        const port = parseInt(payload.port || DEFAULT_TARGET_PORT, 10);
+        const timeoutMs = Math.min(Math.max(parseInt(payload.timeoutMs || '5000', 10), 1000), 15000);
+
+        if (!host || isNaN(port) || port <= 0 || port > 65535) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Invalid host or port specified.' }));
+          return;
+        }
+
+        const startTime = Date.now();
+        let finished = false;
+        const socket = new net.Socket();
+        socket.setTimeout(timeoutMs);
+
+        const cleanup = () => {
+          if (!finished) {
+            finished = true;
+            socket.removeAllListeners();
+            socket.destroy();
+          }
+        };
+
+        socket.on('connect', () => {
+          const latency = Date.now() - startTime;
+          cleanup();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              success: true,
+              host,
+              port,
+              latencyMs: latency,
+              message: `Successfully connected to ${host}:${port} over raw TCP (${latency}ms round-trip).`,
+              timestamp: new Date().toISOString(),
+            })
+          );
+        });
+
+        socket.on('timeout', () => {
+          cleanup();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              success: false,
+              host,
+              port,
+              latencyMs: Date.now() - startTime,
+              error: `Connection timed out after ${timeoutMs}ms. Verify server is online and port ${port} is forwarded.`,
+              timestamp: new Date().toISOString(),
+            })
+          );
+        });
+
+        socket.on('error', (err) => {
+          cleanup();
+          let explanation = err.message;
+          if (err.code === 'ECONNREFUSED') {
+            explanation = `Connection refused (ECONNREFUSED). Host ${host} is reachable, but no Minecraft server is accepting connections on port ${port}.`;
+          } else if (err.code === 'ENOTFOUND') {
+            explanation = `DNS lookup failed (ENOTFOUND). Could not resolve hostname '${host}'.`;
+          } else if (err.code === 'ETIMEDOUT') {
+            explanation = `Connection timed out (ETIMEDOUT).`;
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, host, port, code: err.code || 'UNKNOWN', error: explanation, timestamp: new Date().toISOString() }));
+        });
+
+        socket.connect(port, host);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid request body' }));
+      }
+    });
+    return;
+  }
+
+  // 4. Serve built frontend website from dist/ (if present)
+  if (fs.existsSync(distDir)) {
+    let filePath = path.join(distDir, url.pathname === '/' ? 'index.html' : url.pathname);
+
+    // If requested path does not exist, serve index.html (SPA fallback)
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(distDir, 'index.html');
     }
 
-    // Return human-readable plain text / minimal HTML for basic monitors
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+      });
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+  }
+
+  // 5. Fallback plain-text status when website is not built
+  if (url.pathname === '/' || url.pathname === '/status') {
     const responseBody = `OK - Eaglercraft TCP-to-WebSocket Proxy Alive
 Target Server: ${DEFAULT_TARGET_HOST}:${DEFAULT_TARGET_PORT}
 Active Sessions: ${stats.activeConnections}
@@ -103,28 +227,17 @@ Total Sessions: ${stats.totalConnections}
 Uptime: ${formatUptime(Date.now() - stats.startTime)}
 Data Relayed: RX ${formatBytes(stats.totalBytesToMinecraft)} / TX ${formatBytes(stats.totalBytesToClient)}
 `;
-
-    res.writeHead(200, {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-    });
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(responseBody);
     return;
   }
 
-  // 404 for unknown HTTP paths
   res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Not Found');
 });
 
 /**
  * Parse target Minecraft host and port from URL pathname or query parameters
- * Supports:
- * - /host:port (e.g. /stone.aternos.me:38472)
- * - /host/port (e.g. /stone.aternos.me/38472)
- * - /host (e.g. /mc.hypixel.net -> port 25565)
- * - /?target=host:port
- * - /?host=host&port=port
  */
 function parseTargetFromRequest(urlStr, hostHeader, defaultHost, defaultPort) {
   let targetHost = defaultHost;
@@ -165,9 +278,9 @@ function parseTargetFromRequest(urlStr, hostHeader, defaultHost, defaultPort) {
       cleanPath !== 'health' &&
       cleanPath !== 'healthz' &&
       cleanPath !== 'status' &&
-      !cleanPath.startsWith('api/')
+      !cleanPath.startsWith('api/') &&
+      !cleanPath.startsWith('assets/')
     ) {
-      // Path format: host/port
       if (cleanPath.includes('/')) {
         const segments = cleanPath.split('/').filter(Boolean);
         if (segments.length >= 2) {
@@ -180,7 +293,6 @@ function parseTargetFromRequest(urlStr, hostHeader, defaultHost, defaultPort) {
         }
       }
 
-      // Path format: host:port
       if (cleanPath.includes(':')) {
         const [h, pStr] = cleanPath.split(':');
         if (h) targetHost = h;
@@ -191,16 +303,13 @@ function parseTargetFromRequest(urlStr, hostHeader, defaultHost, defaultPort) {
         return { host: targetHost, port: targetPort };
       }
 
-      // Path format: host only (default to 25565)
       if (cleanPath.length > 2 && (cleanPath.includes('.') || cleanPath === 'localhost')) {
         targetHost = cleanPath;
         targetPort = 25565;
         return { host: targetHost, port: targetPort };
       }
     }
-  } catch {
-    // Keep defaults if parsing fails
-  }
+  } catch {}
 
   return { host: targetHost, port: targetPort };
 }
@@ -209,7 +318,6 @@ function parseTargetFromRequest(urlStr, hostHeader, defaultHost, defaultPort) {
  * WebSocket Server attached to HTTP Server
  */
 const wss = new WebSocketServer({ server });
-
 let connectionSequence = 0;
 
 wss.on('connection', (ws, req) => {
@@ -229,30 +337,18 @@ wss.on('connection', (ws, req) => {
   );
 
   const connTag = `[Client #${connectionId} (${clientIp})]`;
-  console.log(`${new Date().toISOString()} ${connTag} New WebSocket client connected. Bridging to TCP ${targetHost}:${targetPort}`);
+  console.log(`${new Date().toISOString()} ${connTag} WebSocket open. Bridging to TCP ${targetHost}:${targetPort}`);
 
-  // Track per-session metrics
   let sessionBytesToMc = 0;
   let sessionBytesToClient = 0;
   let isClosed = false;
-
-  // Temporary queue for messages received before TCP connection is fully established
   const earlyMessageQueue = [];
   let isTcpConnected = false;
 
-  // Open raw TCP socket to Minecraft server
-  const tcpSocket = net.createConnection({
-    host: targetHost,
-    port: targetPort,
-  });
-
-  // Optimize for low-latency Minecraft packet transmission
+  const tcpSocket = net.createConnection({ host: targetHost, port: targetPort });
   tcpSocket.setNoDelay(true);
   tcpSocket.setKeepAlive(true, 30000);
 
-  /**
-   * Safe cleanup to ensure both sides terminate cleanly and event listeners are dismantled
-   */
   function cleanup(reason, error = null) {
     if (isClosed) return;
     isClosed = true;
@@ -260,52 +356,33 @@ wss.on('connection', (ws, req) => {
 
     if (error) {
       stats.errors++;
-      console.error(`${new Date().toISOString()} ${connTag} Closed due to error: ${error.message || error}`);
+      console.error(`${new Date().toISOString()} ${connTag} Closed error: ${error.message || error}`);
     } else {
       console.log(
         `${new Date().toISOString()} ${connTag} Closed (${reason}). Transferred: ${formatBytes(sessionBytesToMc)} to server, ${formatBytes(sessionBytesToClient)} to client`
       );
     }
 
-    // Detach listeners to prevent memory leaks
-    ws.removeAllListeners('message');
-    ws.removeAllListeners('close');
-    ws.removeAllListeners('error');
-    ws.removeAllListeners('drain');
+    ws.removeAllListeners();
+    tcpSocket.removeAllListeners();
 
-    tcpSocket.removeAllListeners('data');
-    tcpSocket.removeAllListeners('close');
-    tcpSocket.removeAllListeners('error');
-    tcpSocket.removeAllListeners('drain');
-    tcpSocket.removeAllListeners('connect');
-
-    // Close TCP socket
     try {
       if (!tcpSocket.destroyed) {
         tcpSocket.end();
         tcpSocket.destroy();
       }
-    } catch {
-      // Ignore destroy errors during teardown
-    }
+    } catch {}
 
-    // Close WebSocket
     try {
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
         ws.close(1000, 'Proxy bridge closed');
       }
-    } catch {
-      // Ignore close errors during teardown
-    }
+    } catch {}
   }
-
-  // --- TCP Socket Handlers ---
 
   tcpSocket.on('connect', () => {
     isTcpConnected = true;
     console.log(`${new Date().toISOString()} ${connTag} TCP connection established to ${targetHost}:${targetPort}`);
-
-    // Flush any early messages buffered while TCP was handshaking
     while (earlyMessageQueue.length > 0 && !isClosed) {
       const queuedChunk = earlyMessageQueue.shift();
       if (queuedChunk) {
@@ -320,22 +397,15 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  // Relay raw binary bytes: TCP (Minecraft server) -> WebSocket (Browser client)
   tcpSocket.on('data', (chunk) => {
     if (isClosed || ws.readyState !== WebSocket.OPEN) return;
-
     sessionBytesToClient += chunk.length;
     stats.totalBytesToClient += chunk.length;
 
     try {
       ws.send(chunk, { binary: true }, (err) => {
-        if (err) {
-          cleanup('WebSocket send error', err);
-        }
+        if (err) cleanup('WebSocket send error', err);
       });
-
-      // Flow control / backpressure management
-      // If WebSocket buffered amount exceeds 64KB, pause TCP reads until buffered amount decreases
       if (ws.bufferedAmount > 65536) {
         tcpSocket.pause();
       }
@@ -345,27 +415,16 @@ wss.on('connection', (ws, req) => {
   });
 
   tcpSocket.on('drain', () => {
-    // Resume WebSocket reads once TCP buffer has cleared
     if (!isClosed && ws.readyState === WebSocket.OPEN) {
       ws.resume();
     }
   });
 
-  tcpSocket.on('error', (err) => {
-    cleanup(`TCP error (${targetHost}:${targetPort})`, err);
-  });
+  tcpSocket.on('error', (err) => cleanup(`TCP error (${targetHost}:${targetPort})`, err));
+  tcpSocket.on('close', (hadError) => cleanup(hadError ? 'TCP transmission error' : 'TCP server disconnected'));
 
-  tcpSocket.on('close', (hadError) => {
-    cleanup(hadError ? 'TCP closed with transmission error' : 'TCP server disconnected');
-  });
-
-  // --- WebSocket Handlers ---
-
-  // Relay raw binary bytes: WebSocket (Browser client) -> TCP (Minecraft server)
-  ws.on('message', (data, isBinary) => {
+  ws.on('message', (data) => {
     if (isClosed) return;
-
-    // Convert incoming data to standard Node.js Buffer
     let buffer;
     if (Buffer.isBuffer(data)) {
       buffer = data;
@@ -378,7 +437,6 @@ wss.on('connection', (ws, req) => {
     }
 
     if (!isTcpConnected) {
-      // Buffer packet until TCP socket finishes connecting
       if (earlyMessageQueue.length < 500) {
         earlyMessageQueue.push(buffer);
       } else {
@@ -394,48 +452,29 @@ wss.on('connection', (ws, req) => {
 
     sessionBytesToMc += buffer.length;
     stats.totalBytesToMinecraft += buffer.length;
-
-    // Write directly to TCP socket
     const canWrite = tcpSocket.write(buffer);
     if (!canWrite) {
-      // Apply backpressure to WebSocket if TCP kernel send buffer is full
       ws.pause();
     }
   });
 
   ws.on('close', (code, reason) => {
-    const reasonStr = reason ? reason.toString() : 'Normal closure';
-    cleanup(`WebSocket client disconnected (code: ${code}, reason: ${reasonStr})`);
+    cleanup(`WebSocket client disconnected (code: ${code}, reason: ${reason?.toString() || 'Normal'})`);
   });
 
-  ws.on('error', (err) => {
-    cleanup('WebSocket client error', err);
-  });
+  ws.on('error', (err) => cleanup('WebSocket client error', err));
 });
 
-// Periodic check to resume paused TCP sockets when WS bufferedAmount drops
-const backpressureInterval = setInterval(() => {
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 32768) {
-      // Handled automatically via drain or normal poll
-    }
-  }
-}, 50);
-backpressureInterval.unref();
-
-// Start the server binding strictly to process.env.PORT
 server.listen(PORT, '0.0.0.0', () => {
   console.log('===========================================================');
   console.log('   EAGLERCRAFT MINECRAFT TCP <-> WEBSOCKET PROXY SERVER    ');
   console.log('===========================================================');
-  console.log(`[INIT] Listening for WebSocket connections on port :${PORT}`);
-  console.log(`[INIT] Target Minecraft Server: ${DEFAULT_TARGET_HOST}:${DEFAULT_TARGET_PORT}`);
-  console.log(`[INIT] Health Check URL: http://0.0.0.0:${PORT}/health`);
-  console.log(`[INIT] WebSocket Relay URL: ws://0.0.0.0:${PORT}/`);
+  console.log(`[INIT] Listening on port :${PORT}`);
+  console.log(`[INIT] Frontend Web: ${fs.existsSync(distDir) ? 'Serving built dist/' : 'API / Status only'}`);
+  console.log(`[INIT] Default Target: ${DEFAULT_TARGET_HOST}:${DEFAULT_TARGET_PORT}`);
   console.log('===========================================================');
 });
 
-// Graceful process shutdown handling
 function handleProcessSignal(signal) {
   console.log(`\n[SHUTDOWN] Received ${signal}. Closing proxy gracefully...`);
   wss.close(() => {
@@ -444,11 +483,7 @@ function handleProcessSignal(signal) {
       process.exit(0);
     });
   });
-
-  setTimeout(() => {
-    console.error('[SHUTDOWN] Force terminating after timeout.');
-    process.exit(1);
-  }, 5000).unref();
+  setTimeout(() => process.exit(1), 5000).unref();
 }
 
 process.on('SIGINT', () => handleProcessSignal('SIGINT'));
