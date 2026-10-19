@@ -170,6 +170,7 @@ app.get('/api/files/:filename', (req, res) => {
     'server.js': path.join(__dirname, 'server.js'),
     'render.yaml': path.join(__dirname, 'render.yaml'),
     'package.json': path.join(__dirname, 'package.json'),
+    'deploy-package.json': path.join(__dirname, 'deploy', 'package.json'),
     'Dockerfile': path.join(__dirname, 'Dockerfile'),
     'README.md': path.join(__dirname, 'README.md'),
     '.env.example': path.join(__dirname, '.env.example'),
@@ -190,6 +191,85 @@ app.get('/api/files/:filename', (req, res) => {
   }
 });
 
+function parseTargetFromRequest(urlStr?: string, hostHeader?: string, defaultHost = '127.0.0.1', defaultPort = 25565) {
+  let targetHost = defaultHost;
+  let targetPort = defaultPort;
+
+  try {
+    const reqUrl = new URL(urlStr || '/', `http://${hostHeader || 'localhost'}`);
+
+    // 1. Check query parameter ?target=host:port
+    const queryTarget = reqUrl.searchParams.get('target');
+    if (queryTarget) {
+      const parts = queryTarget.trim().split(':');
+      if (parts[0]) targetHost = parts[0];
+      if (parts[1]) {
+        const parsed = parseInt(parts[1], 10);
+        if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) targetPort = parsed;
+      }
+      return { host: targetHost, port: targetPort };
+    }
+
+    // 2. Check query parameter ?host=... and ?port=...
+    const qHost = reqUrl.searchParams.get('host');
+    const qPort = reqUrl.searchParams.get('port');
+    if (qHost) {
+      targetHost = qHost.trim();
+      if (qPort) {
+        const parsed = parseInt(qPort, 10);
+        if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) targetPort = parsed;
+      }
+      return { host: targetHost, port: targetPort };
+    }
+
+    // 3. Check pathname: e.g. /stone.aternos.me:38472 or /stone.aternos.me/38472
+    let cleanPath = decodeURIComponent(reqUrl.pathname).replace(/^\/connect\/?/, '').replace(/^\/+|\/+$/g, '');
+
+    if (
+      cleanPath &&
+      cleanPath !== 'health' &&
+      cleanPath !== 'healthz' &&
+      cleanPath !== 'status' &&
+      !cleanPath.startsWith('api/')
+    ) {
+      // Path format: host/port
+      if (cleanPath.includes('/')) {
+        const segments = cleanPath.split('/').filter(Boolean);
+        if (segments.length >= 2) {
+          targetHost = segments[0];
+          const parsed = parseInt(segments[1], 10);
+          if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) targetPort = parsed;
+          return { host: targetHost, port: targetPort };
+        } else if (segments.length === 1) {
+          cleanPath = segments[0];
+        }
+      }
+
+      // Path format: host:port
+      if (cleanPath.includes(':')) {
+        const [h, pStr] = cleanPath.split(':');
+        if (h) targetHost = h;
+        if (pStr) {
+          const parsed = parseInt(pStr, 10);
+          if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) targetPort = parsed;
+        }
+        return { host: targetHost, port: targetPort };
+      }
+
+      // Path format: host only (default to 25565)
+      if (cleanPath.length > 2 && (cleanPath.includes('.') || cleanPath === 'localhost')) {
+        targetHost = cleanPath;
+        targetPort = 25565;
+        return { host: targetHost, port: targetPort };
+      }
+    }
+  } catch {
+    // Keep defaults
+  }
+
+  return { host: targetHost, port: targetPort };
+}
+
 // Setup WebSocket Server for TCP proxying
 const wss = new WebSocketServer({ noServer: true });
 let connCounter = 0;
@@ -203,25 +283,12 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
                    req.socket.remoteAddress ||
                    'unknown';
 
-  let targetHost = DEFAULT_TARGET_HOST;
-  let targetPort = DEFAULT_TARGET_PORT;
-
-  try {
-    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    const queryTarget = reqUrl.searchParams.get('target');
-    if (queryTarget) {
-      const parts = queryTarget.split(':');
-      if (parts[0]) targetHost = parts[0];
-      if (parts[1]) {
-        const parsed = parseInt(parts[1], 10);
-        if (!isNaN(parsed) && parsed > 0 && parsed <= 65535) {
-          targetPort = parsed;
-        }
-      }
-    }
-  } catch {
-    // Keep default
-  }
+  const { host: targetHost, port: targetPort } = parseTargetFromRequest(
+    req.url,
+    req.headers.host,
+    DEFAULT_TARGET_HOST,
+    DEFAULT_TARGET_PORT
+  );
 
   logProxyEvent('connect', `[#${connId} from ${clientIp}] WebSocket open. Bridging to TCP ${targetHost}:${targetPort}`);
 

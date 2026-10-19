@@ -3,7 +3,6 @@ import {
   Server,
   Activity,
   Wifi,
-  Terminal,
   FileCode,
   Check,
   Copy,
@@ -19,7 +18,11 @@ import {
   ArrowRight,
   Radio,
   Sliders,
-  ChevronRight
+  ChevronRight,
+  Sparkles,
+  Bookmark,
+  Trash2,
+  Gamepad2
 } from 'lucide-react';
 
 interface ProxyStatus {
@@ -51,27 +54,70 @@ interface TestResult {
   timestamp: string;
 }
 
+interface SavedServer {
+  id: string;
+  host: string;
+  port: number;
+  label?: string;
+  timestamp: number;
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'tester' | 'files' | 'deploy' | 'aternos' | 'logs'>('overview');
+  const [activeTab, setActiveTab] = useState<'generator' | 'overview' | 'tester' | 'files' | 'deploy' | 'aternos' | 'logs'>('generator');
   const [status, setStatus] = useState<ProxyStatus | null>(null);
-  const [loadingStatus, setLoadingStatus] = useState(true);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Server test state
+  // Custom WSS Generator State
+  const [customHost, setCustomHost] = useState('stone.aternos.me');
+  const [customPort, setCustomPort] = useState('38472');
+  const [proxyDomain, setProxyDomain] = useState('');
+  const [urlFormat, setUrlFormat] = useState<'colon' | 'slash' | 'query'>('colon');
+  const [serverLabel, setServerLabel] = useState('');
+
+  // Live Ping/Test state for Generator
+  const [isPinging, setIsPinging] = useState(false);
+  const [pingResult, setPingResult] = useState<TestResult | null>(null);
+
+  // Dedicated Tester Tab State
   const [testHost, setTestHost] = useState('myserver.aternos.me');
   const [testPort, setTestPort] = useState('25565');
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  // File viewer state
-  const [selectedFile, setSelectedFile] = useState<'server.js' | 'render.yaml' | 'package.json' | 'Dockerfile' | '.env.example' | 'README.md'>('server.js');
+  // File Viewer State
+  const [selectedFile, setSelectedFile] = useState<
+    'render.yaml' | 'package.json' | 'deploy-package.json' | 'server.js' | 'Dockerfile' | '.env.example' | 'README.md'
+  >('render.yaml');
   const [fileContent, setFileContent] = useState<string>('');
   const [loadingFile, setLoadingFile] = useState(false);
 
-  // Custom client URL builder
-  const [customClientDomain, setCustomClientDomain] = useState('');
+  // Saved Custom Servers in localStorage
+  const [savedServers, setSavedServers] = useState<SavedServer[]>(() => {
+    try {
+      const stored = localStorage.getItem('eagler_proxy_saved_servers');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return [
+      { id: '1', host: 'stone.aternos.me', port: 38472, label: 'My Aternos Survival', timestamp: Date.now() },
+      { id: '2', host: 'mc.hypixel.net', port: 25565, label: 'Hypixel Network', timestamp: Date.now() - 3600000 },
+    ];
+  });
 
-  // Fetch status on mount and interval
+  // Automatically initialize proxyDomain from window.location
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !proxyDomain) {
+      setProxyDomain(window.location.host);
+    }
+  }, []);
+
+  // Save servers to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('eagler_proxy_saved_servers', JSON.stringify(savedServers));
+    } catch {}
+  }, [savedServers]);
+
+  // Fetch status on interval
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/proxy/status');
@@ -81,8 +127,6 @@ export default function App() {
       }
     } catch (e) {
       console.warn('Failed to fetch proxy status:', e);
-    } finally {
-      setLoadingStatus(false);
     }
   };
 
@@ -124,6 +168,38 @@ export default function App() {
     }, 2000);
   };
 
+  // Ping verification directly inside Generator
+  const handlePingServer = async (hostToTest: string, portToTest: string) => {
+    if (!hostToTest.trim() || !portToTest.trim()) return;
+    setIsPinging(true);
+    setPingResult(null);
+
+    try {
+      const res = await fetch('/api/proxy/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: hostToTest.trim(),
+          port: parseInt(portToTest.trim(), 10) || 25565,
+          timeoutMs: 6000,
+        }),
+      });
+      const data = await res.json();
+      setPingResult(data);
+    } catch (err: any) {
+      setPingResult({
+        success: false,
+        host: hostToTest,
+        port: parseInt(portToTest, 10) || 25565,
+        error: err.message || 'Network error reaching server.',
+        timestamp: new Date().toISOString(),
+      });
+    } finally {
+      setIsPinging(false);
+    }
+  };
+
+  // Dedicated Tab Ping Test
   const handleTestConnection = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!testHost || !testPort) return;
@@ -134,7 +210,7 @@ export default function App() {
       const res = await fetch('/api/proxy/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: testHost, port: parseInt(testPort, 10), timeoutMs: 6000 }),
+        body: JSON.stringify({ host: testHost.trim(), port: parseInt(testPort.trim(), 10), timeoutMs: 6000 }),
       });
       const data = await res.json();
       setTestResult(data);
@@ -149,6 +225,24 @@ export default function App() {
     } finally {
       setIsTesting(false);
     }
+  };
+
+  const handleSaveCurrentServer = () => {
+    if (!customHost.trim()) return;
+    const p = parseInt(customPort.trim(), 10) || 25565;
+    const newEntry: SavedServer = {
+      id: Math.random().toString(36).substring(2, 9),
+      host: customHost.trim(),
+      port: p,
+      label: serverLabel.trim() || `${customHost.trim()}:${p}`,
+      timestamp: Date.now(),
+    };
+    setSavedServers((prev) => [newEntry, ...prev.filter((s) => s.host !== customHost.trim() || s.port !== p)]);
+    setServerLabel('');
+  };
+
+  const handleDeleteSavedServer = (id: string) => {
+    setSavedServers((prev) => prev.filter((s) => s.id !== id));
   };
 
   const formatBytes = (bytes: number) => {
@@ -169,23 +263,34 @@ export default function App() {
     return `${m}m ${s}s`;
   };
 
-  // Compute public WebSocket URL
+  // Compute Active Protocol & Host
+  const isHttps = typeof window !== 'undefined' ? window.location.protocol === 'https:' : true;
   const currentHost = typeof window !== 'undefined' ? window.location.host : 'localhost:8080';
-  const isHttps = typeof window !== 'undefined' ? window.location.protocol === 'https:' : false;
-  const wsProtocol = isHttps ? 'wss:' : 'ws:';
-  const defaultWsUrl = `${wsProtocol}//${currentHost}`;
-  const effectiveWsUrl = customClientDomain.trim()
-    ? (customClientDomain.startsWith('ws://') || customClientDomain.startsWith('wss://')
-        ? customClientDomain
-        : `wss://${customClientDomain}`)
-    : defaultWsUrl;
+  const effectiveProxyHost = proxyDomain.trim().replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '').replace(/\/+$/, '') || currentHost;
+  const wsScheme = isHttps ? 'wss://' : 'ws://';
+
+  // Compute Custom WSS URL according to selected format
+  const sanitizedTargetHost = customHost.trim() || 'stone.aternos.me';
+  const sanitizedTargetPort = customPort.trim() || '25565';
+
+  const getCustomWssUrl = (format: 'colon' | 'slash' | 'query') => {
+    if (format === 'colon') {
+      return `${wsScheme}${effectiveProxyHost}/${sanitizedTargetHost}:${sanitizedTargetPort}`;
+    }
+    if (format === 'slash') {
+      return `${wsScheme}${effectiveProxyHost}/${sanitizedTargetHost}/${sanitizedTargetPort}`;
+    }
+    return `${wsScheme}${effectiveProxyHost}/?target=${sanitizedTargetHost}:${sanitizedTargetPort}`;
+  };
+
+  const activeWssUrl = getCustomWssUrl(urlFormat);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
-      {/* Top Bar following Top Bar Contract (1-line Brand wordmark, 4-5 text links, 1 primary action) */}
+      {/* Top Bar Contract (1-line wordmark, 4-5 text links, 1 primary action) */}
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
-          {/* Zone 1: Brand wordmark */}
+          {/* Zone 1: Brand Wordmark */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
               <Layers className="w-5 h-5" />
@@ -198,12 +303,21 @@ export default function App() {
           {/* Zone 2: Navigation Links */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
             <button
+              onClick={() => setActiveTab('generator')}
+              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                activeTab === 'generator' ? 'text-emerald-400 font-semibold' : ''
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>WSS Generator</span>
+            </button>
+            <button
               onClick={() => setActiveTab('overview')}
               className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
                 activeTab === 'overview' ? 'text-emerald-400 font-semibold' : ''
               }`}
             >
-              Overview
+              Overview & Status
             </button>
             <button
               onClick={() => setActiveTab('tester')}
@@ -219,7 +333,7 @@ export default function App() {
                 activeTab === 'files' ? 'text-emerald-400 font-semibold' : ''
               }`}
             >
-              Code & Config
+              Code & Deploy Files
             </button>
             <button
               onClick={() => setActiveTab('deploy')}
@@ -237,23 +351,15 @@ export default function App() {
             >
               Aternos Guide
             </button>
-            <button
-              onClick={() => setActiveTab('logs')}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === 'logs' ? 'text-emerald-400 font-semibold' : ''
-              }`}
-            >
-              Live Logs
-            </button>
           </nav>
 
           {/* Zone 3: 1 Primary CTA */}
           <div className="flex items-center gap-3 shrink-0">
             <button
-              onClick={() => copyToClipboard(defaultWsUrl, 'top-bar-url')}
+              onClick={() => copyToClipboard(activeWssUrl, 'top-bar-custom-url')}
               className="inline-flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors whitespace-nowrap shrink-0 shadow-sm shadow-emerald-500/20 active:scale-[0.98]"
             >
-              {copiedKey === 'top-bar-url' ? (
+              {copiedKey === 'top-bar-custom-url' ? (
                 <>
                   <Check className="w-3.5 h-3.5" />
                   <span>Copied WSS URL</span>
@@ -261,7 +367,7 @@ export default function App() {
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5" />
-                  <span>Copy Proxy URL</span>
+                  <span>Copy Custom WSS</span>
                 </>
               )}
             </button>
@@ -270,7 +376,7 @@ export default function App() {
 
         {/* Mobile Navigation bar */}
         <div className="md:hidden flex items-center gap-2 px-4 py-2 border-t border-slate-800/60 overflow-x-auto text-xs">
-          {(['overview', 'tester', 'files', 'deploy', 'aternos', 'logs'] as const).map((tab) => (
+          {(['generator', 'overview', 'tester', 'files', 'deploy', 'aternos', 'logs'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -278,7 +384,7 @@ export default function App() {
                 activeTab === tab ? 'bg-slate-800 text-emerald-400 font-semibold' : 'text-slate-400'
               }`}
             >
-              {tab === 'files' ? 'Code' : tab}
+              {tab === 'generator' ? 'WSS Generator' : tab === 'files' ? 'Code' : tab}
             </button>
           ))}
         </div>
@@ -286,64 +392,408 @@ export default function App() {
 
       {/* Main Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* TAB 1: OVERVIEW */}
-        {activeTab === 'overview' && (
+        {/* TAB 1: CUSTOM WSS GENERATOR (PRIMARY REQUEST) */}
+        {activeTab === 'generator' && (
           <div className="space-y-8">
-            {/* Hero Section */}
-            <div className="border border-slate-800/80 rounded-2xl bg-gradient-to-b from-slate-900/80 to-slate-900/30 p-6 sm:p-8">
+            {/* Header intro */}
+            <div className="border border-slate-800/80 rounded-2xl bg-gradient-to-b from-slate-900/90 to-slate-900/30 p-6 sm:p-8">
               <div className="max-w-3xl">
-                <div className="flex items-center gap-2 text-xs text-slate-400 mb-3">
-                  <span>WebSocket to TCP Relay</span>
+                <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
+                  <span>Universal Eaglercraft Bridge</span>
                   <span aria-hidden="true">·</span>
-                  <span>Eaglercraft 1.5.2 / 1.8.8 / 1.12 / 1.20</span>
+                  <span className="text-emerald-400 font-mono">Dynamic On-Demand Routing</span>
                   <span aria-hidden="true">·</span>
-                  <span className="text-emerald-400 font-mono">Zero-overhead byte-for-byte stream</span>
+                  <span>No Server Restart Required</span>
                 </div>
                 <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-white tracking-tight text-balance">
-                  Minecraft TCP to WebSocket Proxy
+                  Minecraft IP to Custom WSS Generator
                 </h1>
-                <p className="mt-3 text-slate-300 text-sm sm:text-base leading-relaxed max-w-2xl">
-                  Enables browser-based Minecraft players on Eaglercraft to connect seamlessly to standard vanilla,
-                  Spigot, Paper, Fabric, or Aternos servers that only speak raw TCP.
+                <p className="mt-2 text-slate-300 text-sm sm:text-base leading-relaxed">
+                  Enter any Minecraft server IP or domain and port below. The proxy will dynamically route your browser&apos;s
+                  WebSocket connection straight to that Minecraft server in real time.
                 </p>
-
-                <div className="mt-6 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={() => setActiveTab('tester')}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors shadow-sm active:scale-[0.98]"
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                    <span>Test Minecraft Server</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('files')}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors active:scale-[0.98]"
-                  >
-                    <FileCode className="w-3.5 h-3.5" />
-                    <span>View server.js & render.yaml</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('deploy')}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 transition-colors active:scale-[0.98]"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Render Deployment Guide</span>
-                  </button>
-                </div>
               </div>
             </div>
 
+            {/* Generator Form & Output Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* Left Column: Input Form (7 Cols) */}
+              <div className="lg:col-span-7 border border-slate-800/80 rounded-xl bg-slate-900/40 p-6 space-y-5">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
+                  <h2 className="font-display text-base font-semibold text-white flex items-center gap-2">
+                    <Server className="w-4 h-4 text-emerald-400" />
+                    <span>1. Enter Your Minecraft Server Details</span>
+                  </h2>
+                  <div className="text-[11px] text-slate-400">Vanilla · Aternos · Paper · Spigot</div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                      Minecraft Hostname or IP Address
+                    </label>
+                    <input
+                      type="text"
+                      value={customHost}
+                      onChange={(e) => setCustomHost(e.target.value)}
+                      placeholder="e.g. stone.aternos.me or mc.hypixel.net"
+                      className="w-full px-3.5 py-2.5 text-sm bg-slate-950 border border-slate-700/80 rounded-lg text-white font-mono focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      Works with any Aternos domain or numeric IP (e.g. <code>123.45.67.89</code>).
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                      Minecraft TCP Port
+                    </label>
+                    <input
+                      type="number"
+                      value={customPort}
+                      onChange={(e) => setCustomPort(e.target.value)}
+                      placeholder="25565"
+                      className="w-full px-3.5 py-2.5 text-sm bg-slate-950 border border-slate-700/80 rounded-lg text-white font-mono focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      Standard: <code>25565</code>; Aternos uses dynamic ports like <code>38472</code>.
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Presets */}
+                <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-slate-400">
+                  <span className="text-slate-500">Presets:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomHost('stone.aternos.me');
+                      setCustomPort('38472');
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono transition-colors"
+                  >
+                    Aternos Sample (38472)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomHost('mc.hypixel.net');
+                      setCustomPort('25565');
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono transition-colors"
+                  >
+                    Hypixel (25565)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomHost('127.0.0.1');
+                      setCustomPort('25565');
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono transition-colors"
+                  >
+                    Localhost (25565)
+                  </button>
+                </div>
+
+                {/* Optional Proxy Domain Config */}
+                <div className="pt-4 border-t border-slate-800/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5 text-slate-400" />
+                      <span>Proxy Hosting Domain (Render / VPS / AI Studio)</span>
+                    </label>
+                    <span className="text-[11px] text-slate-500">Auto-detected from browser</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={proxyDomain}
+                    onChange={(e) => setProxyDomain(e.target.value)}
+                    placeholder="e.g. eaglercraft-minecraft-proxy.onrender.com"
+                    className="w-full px-3.5 py-2 text-xs bg-slate-950 border border-slate-700/80 rounded-lg text-slate-300 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                  <div className="text-[11px] text-slate-500">
+                    If deployed on Render, type your Render URL (e.g. <code>my-service.onrender.com</code>) to generate matching Render WSS links.
+                  </div>
+                </div>
+
+                {/* Optional Save to List */}
+                <div className="pt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={serverLabel}
+                    onChange={(e) => setServerLabel(e.target.value)}
+                    placeholder="Optional label (e.g. My Survival World)"
+                    className="flex-1 px-3 py-1.5 text-xs bg-slate-950 border border-slate-700/80 rounded-lg text-slate-300"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveCurrentServer}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
+                  >
+                    <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Save Server</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Generated WSS Result & Copy (5 Cols) */}
+              <div className="lg:col-span-5 space-y-4">
+                {/* Resulting Address Box */}
+                <div className="border border-emerald-500/40 rounded-xl bg-gradient-to-b from-emerald-950/20 to-slate-900/60 p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Your Custom WSS Address</span>
+                    </span>
+                    <span className="text-[11px] text-slate-400">Ready for Eaglercraft</span>
+                  </div>
+
+                  {/* Format Selector */}
+                  <div className="flex items-center gap-1 p-1 bg-slate-950 rounded-lg border border-slate-800 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setUrlFormat('colon')}
+                      className={`flex-1 py-1 px-2 rounded font-mono transition-colors ${
+                        urlFormat === 'colon' ? 'bg-slate-800 text-emerald-400 font-semibold' : 'text-slate-400'
+                      }`}
+                      title="/host:port format"
+                    >
+                      /host:port
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUrlFormat('slash')}
+                      className={`flex-1 py-1 px-2 rounded font-mono transition-colors ${
+                        urlFormat === 'slash' ? 'bg-slate-800 text-emerald-400 font-semibold' : 'text-slate-400'
+                      }`}
+                      title="/host/port format"
+                    >
+                      /host/port
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUrlFormat('query')}
+                      className={`flex-1 py-1 px-2 rounded font-mono transition-colors ${
+                        urlFormat === 'query' ? 'bg-slate-800 text-emerald-400 font-semibold' : 'text-slate-400'
+                      }`}
+                      title="?target=host:port format"
+                    >
+                      ?target=
+                    </button>
+                  </div>
+
+                  {/* The Address Display */}
+                  <div className="p-3.5 bg-slate-950 rounded-lg border border-emerald-500/30 text-emerald-300 font-mono text-xs sm:text-sm break-all select-all font-semibold shadow-inner">
+                    {activeWssUrl}
+                  </div>
+
+                  {/* Big Copy Button & Ping Button */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(activeWssUrl, 'main-custom-url')}
+                      className="inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition-colors shadow-sm shadow-emerald-500/20 active:scale-[0.98]"
+                    >
+                      {copiedKey === 'main-custom-url' ? (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Copied Address!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>Copy Address</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isPinging}
+                      onClick={() => handlePingServer(customHost, customPort)}
+                      className="inline-flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-medium text-xs disabled:opacity-50 transition-colors"
+                    >
+                      {isPinging ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 text-emerald-400" />}
+                      <span>{isPinging ? 'Pinging TCP...' : 'Ping Minecraft IP'}</span>
+                    </button>
+                  </div>
+
+                  {/* Real-time Ping Diagnostic Result */}
+                  {pingResult && (
+                    <div
+                      className={`p-3 rounded-lg border text-xs space-y-1 ${
+                        pingResult.success
+                          ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
+                          : 'border-red-500/40 bg-red-950/30 text-red-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-semibold">
+                        <span className="flex items-center gap-1.5">
+                          {pingResult.success ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <AlertCircle className="w-3.5 h-3.5 text-red-400" />}
+                          <span>{pingResult.success ? 'Server Online' : 'Server Unreachable'}</span>
+                        </span>
+                        {pingResult.latencyMs !== undefined && (
+                          <span className="font-mono tabular-nums text-[11px] bg-slate-900 px-1.5 py-0.5 rounded">
+                            {pingResult.latencyMs}ms latency
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-300 leading-normal">
+                        {pingResult.message || pingResult.error}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="text-[11px] text-slate-400 leading-relaxed border-t border-slate-800/80 pt-3">
+                    <strong>Where to paste:</strong> Open Eaglercraft $\rightarrow$ Multiplayer $\rightarrow$ Add Server $\rightarrow$ paste into <strong>Server Address</strong>.
+                  </div>
+                </div>
+
+                {/* Saved Custom Servers List */}
+                {savedServers.length > 0 && (
+                  <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-4 space-y-2">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                      <span>Saved / Recent Servers</span>
+                      <span className="text-[11px] text-slate-500">{savedServers.length} saved</span>
+                    </div>
+
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                      {savedServers.map((serverItem) => (
+                        <div
+                          key={serverItem.id}
+                          className="flex items-center justify-between p-2 rounded-lg bg-slate-950/60 border border-slate-800/60 text-xs hover:border-slate-700 transition-colors"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomHost(serverItem.host);
+                              setCustomPort(serverItem.port.toString());
+                              setPingResult(null);
+                            }}
+                            className="text-left flex-1 truncate mr-2"
+                          >
+                            <div className="font-medium text-white truncate">{serverItem.label || serverItem.host}</div>
+                            <div className="font-mono text-[11px] text-slate-400">
+                              {serverItem.host}:{serverItem.port}
+                            </div>
+                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const url = `${wsScheme}${effectiveProxyHost}/${serverItem.host}:${serverItem.port}`;
+                                copyToClipboard(url, `saved-${serverItem.id}`);
+                              }}
+                              className="p-1 text-slate-400 hover:text-emerald-400 transition-colors"
+                              title="Copy WSS"
+                            >
+                              {copiedKey === `saved-${serverItem.id}` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSavedServer(serverItem.id)}
+                              className="p-1 text-slate-500 hover:text-red-400 transition-colors"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* In-Game Minecraft Simulator / Visual Guide */}
+            <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-6 space-y-4">
+              <h2 className="font-display text-base font-semibold text-white flex items-center gap-2">
+                <Gamepad2 className="w-4 h-4 text-emerald-400" />
+                <span>How to Add This Address in Eaglercraft</span>
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                {/* Visual Simulator of Minecraft UI */}
+                <div className="border-2 border-slate-700 bg-slate-900 rounded-lg p-5 font-mono shadow-2xl space-y-4">
+                  <div className="text-center font-bold text-sm text-slate-200 tracking-wide">
+                    Edit Server Info
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-400">Server Name</label>
+                    <div className="w-full bg-black border border-slate-600 px-3 py-1.5 text-xs text-white">
+                      {serverLabel.trim() || 'My Minecraft Server'}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-emerald-400 font-bold">Server Address (Paste Custom WSS Here)</label>
+                    <div className="w-full bg-black border-2 border-emerald-500 px-3 py-2 text-xs text-emerald-300 break-all select-all font-semibold">
+                      {activeWssUrl}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <div className="flex-1 bg-slate-800 border border-slate-600 text-center py-1.5 text-xs text-slate-200 font-bold shadow">
+                      Done
+                    </div>
+                    <div className="flex-1 bg-slate-800 border border-slate-600 text-center py-1.5 text-xs text-slate-400 shadow">
+                      Cancel
+                    </div>
+                  </div>
+                </div>
+
+                {/* Step Checklist */}
+                <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px]">
+                      1
+                    </span>
+                    <p>
+                      In Eaglercraft (browser client), click <strong>Multiplayer</strong>, then click <strong>Add Server</strong>.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px]">
+                      2
+                    </span>
+                    <p>
+                      Paste the generated WSS address into <strong>Server Address</strong>.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2.5">
+                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 text-[11px]">
+                      3
+                    </span>
+                    <p>
+                      Click <strong>Done</strong>. Select your server from the multiplayer list and click <strong>Join Server</strong>!
+                    </p>
+                  </div>
+                  <div className="p-3 bg-amber-950/20 border border-amber-500/30 rounded-lg text-amber-200 text-[11px]">
+                    <strong>Server requirements:</strong> Ensure your Minecraft server has <strong>Cracked: ON</strong> (or <code>online-mode=false</code> in server.properties) because browser clients cannot authenticate with official Mojang accounts.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: OVERVIEW & STATUS */}
+        {activeTab === 'overview' && (
+          <div className="space-y-8">
             {/* Metrics KPI Row with tabular figures */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-4">
                 <div className="flex items-center justify-between text-slate-400 mb-1 text-xs">
-                  <span>Target Server</span>
+                  <span>Default Fallback</span>
                   <Server className="w-4 h-4 text-emerald-400" />
                 </div>
-                <div className="text-lg font-bold text-white font-mono truncate" title={`${status?.targetHost || '127.0.0.1'}:${status?.targetPort || 25565}`}>
+                <div className="text-lg font-bold text-white font-mono truncate">
                   {status ? `${status.targetHost}:${status.targetPort}` : 'Loading...'}
                 </div>
-                <div className="text-xs text-slate-500 mt-1">Configured via TARGET_HOST</div>
+                <div className="text-xs text-slate-500 mt-1">When no URL target specified</div>
               </div>
 
               <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-4">
@@ -390,7 +840,7 @@ export default function App() {
             {/* Architecture Relay Diagram */}
             <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-6">
               <h2 className="font-display text-lg font-semibold text-white mb-4">
-                Bi-Directional Relay Architecture
+                Dynamic Bi-Directional Relay Architecture
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
                 {/* Step 1: Eaglercraft */}
@@ -398,65 +848,42 @@ export default function App() {
                   <div className="text-xs text-emerald-400 font-mono mb-1">Browser Client</div>
                   <h3 className="text-base font-bold text-white">Eaglercraft 1.8.8</h3>
                   <p className="text-xs text-slate-400 mt-1">
-                    Connects using standard WebSockets. Modern browsers block raw TCP sockets due to sandbox security.
+                    Connects using standard WebSockets. Passes target IP & port directly in URL path or query!
                   </p>
                   <div className="mt-3 text-xs font-mono bg-slate-900/90 px-2.5 py-1.5 rounded text-slate-300 break-all">
-                    wss://your-proxy.onrender.com
+                    {wsScheme}{effectiveProxyHost}/&lt;target-ip&gt;:&lt;port&gt;
                   </div>
                 </div>
 
                 {/* Step 2: This Node.js Proxy */}
                 <div className="border border-emerald-500/40 bg-emerald-950/10 rounded-xl p-4 relative">
-                  <div className="text-xs text-emerald-400 font-mono mb-1">Node.js Stream Relay</div>
+                  <div className="text-xs text-emerald-400 font-mono mb-1">Dynamic Node.js Stream Relay</div>
                   <h3 className="text-base font-bold text-white">EaglerProxy (server.js)</h3>
                   <p className="text-xs text-slate-400 mt-1">
-                    Listens on <code className="text-emerald-400 font-mono">process.env.PORT</code>, unwraps WebSocket frames,
-                    applies backpressure control, and streams unbuffered raw TCP bytes.
+                    Extracts requested destination Minecraft IP & port from the URL. Opens an unbuffered raw TCP stream.
                   </p>
                   <div className="mt-3 text-xs font-mono bg-slate-900/90 px-2.5 py-1.5 rounded text-emerald-400">
-                    net.createConnection() + ws.send()
+                    parseTargetFromRequest() + net.createConnection()
                   </div>
                 </div>
 
                 {/* Step 3: Target Minecraft Server */}
                 <div className="border border-slate-800 bg-slate-950/60 rounded-xl p-4">
                   <div className="text-xs text-slate-400 font-mono mb-1">Target Host</div>
-                  <h3 className="text-base font-bold text-white">Minecraft TCP Server</h3>
+                  <h3 className="text-base font-bold text-white">Any Minecraft TCP Server</h3>
                   <p className="text-xs text-slate-400 mt-1">
-                    Vanilla, Paper, Spigot, Fabric, or Aternos. Sees incoming packets as genuine TCP Minecraft protocol handshakes.
+                    Receives pristine, unbuffered TCP Minecraft packets. Works with Aternos, Hypixel, and Vanilla.
                   </p>
                   <div className="mt-3 text-xs font-mono bg-slate-900/90 px-2.5 py-1.5 rounded text-slate-300 break-all">
-                    {status?.targetHost || 'myserver.aternos.me'}:{status?.targetPort || 25565}
+                    {customHost}:{customPort}
                   </div>
                 </div>
-              </div>
-            </div>
-
-            {/* Quick Connection URL Box */}
-            <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-              <div>
-                <h3 className="text-base font-semibold text-white">Eaglercraft Multiplayer Server Address</h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  Paste this WebSocket address directly into your Eaglercraft client&apos;s &quot;Add Server&quot; screen:
-                </p>
-                <div className="mt-2 font-mono text-sm text-emerald-400 bg-slate-950 px-3 py-2 rounded-lg border border-slate-800 select-all">
-                  {defaultWsUrl}
-                </div>
-              </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <button
-                  onClick={() => copyToClipboard(defaultWsUrl, 'overview-ws-url')}
-                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors shadow-sm"
-                >
-                  {copiedKey === 'overview-ws-url' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedKey === 'overview-ws-url' ? 'Copied!' : 'Copy Address'}</span>
-                </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB 2: SERVER TESTER & PING */}
+        {/* TAB 3: SERVER TESTER */}
         {activeTab === 'tester' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <div>
@@ -481,9 +908,6 @@ export default function App() {
                     className="w-full px-3.5 py-2 text-sm bg-slate-950 border border-slate-700/80 rounded-lg text-white font-mono focus:outline-none focus:border-emerald-500"
                     required
                   />
-                  <div className="text-[11px] text-slate-500 mt-1">
-                    For Aternos, use your active server address (e.g. <code>user.aternos.me</code>).
-                  </div>
                 </div>
 
                 <div>
@@ -498,9 +922,6 @@ export default function App() {
                     className="w-full px-3.5 py-2 text-sm bg-slate-950 border border-slate-700/80 rounded-lg text-white font-mono focus:outline-none focus:border-emerald-500"
                     required
                   />
-                  <div className="text-[11px] text-slate-500 mt-1">
-                    Standard is 25565; Aternos uses dynamic ports.
-                  </div>
                 </div>
               </div>
 
@@ -521,8 +942,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      setTestHost('myserver.aternos.me');
-                      setTestPort('25565');
+                      setTestHost('stone.aternos.me');
+                      setTestPort('38472');
                     }}
                     className="text-emerald-400 hover:underline"
                   >
@@ -541,7 +962,6 @@ export default function App() {
               </div>
             </form>
 
-            {/* Test Results Display */}
             {testResult && (
               <div
                 className={`border rounded-xl p-5 ${
@@ -574,11 +994,10 @@ export default function App() {
                     {testResult.success && (
                       <div className="mt-3 pt-3 border-t border-emerald-500/20 text-xs text-slate-300 space-y-1">
                         <div>
-                          <strong>Ready for Eaglercraft:</strong> Your proxy can bridge incoming WebSocket connections to{' '}
-                          <code className="text-emerald-300 font-mono">{testResult.host}:{testResult.port}</code>.
+                          <strong>Custom WSS Address for this Server:</strong>
                         </div>
                         <div className="font-mono text-emerald-400 bg-slate-950/80 p-2 rounded border border-emerald-500/30 select-all">
-                          {defaultWsUrl}/?target={testResult.host}:{testResult.port}
+                          {wsScheme}{effectiveProxyHost}/{testResult.host}:{testResult.port}
                         </div>
                       </div>
                     )}
@@ -586,46 +1005,10 @@ export default function App() {
                 </div>
               </div>
             )}
-
-            {/* Custom Client URL Generator */}
-            <div className="border border-slate-800/80 rounded-xl bg-slate-900/40 p-6 space-y-4">
-              <h3 className="text-base font-semibold text-white">Eaglercraft Server Address Generator</h3>
-              <p className="text-xs text-slate-400">
-                If you have deployed this proxy to Render or a custom VPS domain, enter your domain below to generate the exact connection URL:
-              </p>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Your Deployed Proxy Domain
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={customClientDomain}
-                    onChange={(e) => setCustomClientDomain(e.target.value)}
-                    placeholder="e.g. my-eagler-proxy.onrender.com"
-                    className="flex-1 px-3.5 py-2 text-sm bg-slate-950 border border-slate-700/80 rounded-lg text-white font-mono focus:outline-none focus:border-emerald-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(effectiveWsUrl, 'custom-url')}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors whitespace-nowrap"
-                  >
-                    {copiedKey === 'custom-url' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedKey === 'custom-url' ? 'Copied' : 'Copy WSS'}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-xs space-y-1">
-                <span className="text-slate-400">Resulting Eaglercraft Address:</span>
-                <div className="font-mono text-emerald-400 select-all break-all">{effectiveWsUrl}</div>
-              </div>
-            </div>
           </div>
         )}
 
-        {/* TAB 3: CODE & CONFIG FILES */}
+        {/* TAB 4: CODE & DEPLOY FILES */}
         {activeTab === 'files' && (
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -658,7 +1041,7 @@ export default function App() {
 
             {/* File Selector Tabs */}
             <div className="flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-lg overflow-x-auto text-xs">
-              {(['server.js', 'render.yaml', 'package.json', 'Dockerfile', '.env.example', 'README.md'] as const).map(
+              {(['render.yaml', 'package.json', 'deploy-package.json', 'server.js', 'Dockerfile', '.env.example', 'README.md'] as const).map(
                 (fileName) => (
                   <button
                     key={fileName}
@@ -693,163 +1076,84 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 4: RENDER DEPLOYMENT GUIDE */}
+        {/* TAB 5: RENDER DEPLOY */}
         {activeTab === 'deploy' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <div>
               <h2 className="font-display text-2xl font-bold text-white">Deploy to Render in 3 Steps</h2>
               <p className="text-sm text-slate-400 mt-1">
-                Render offers free automatic SSL/TLS termination, which is mandatory because web browsers refuse to connect
-                to insecure WebSockets (<code className="font-mono">ws://</code>) from HTTPS sites.
+                Once deployed on Render, your proxy URL (e.g. <code>https://my-proxy.onrender.com</code>) will automatically
+                support ANY player typing their IP/port to get custom WSS addresses!
               </p>
             </div>
 
             <div className="space-y-4">
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5">
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0">
-                    1
-                  </span>
-                  <div className="space-y-2">
-                    <h3 className="text-base font-semibold text-white">Push Code to GitHub or GitLab</h3>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Initialize a git repo with <code className="text-emerald-400 font-mono">server.js</code>,{' '}
-                      <code className="text-emerald-400 font-mono">render.yaml</code>, and{' '}
-                      <code className="text-emerald-400 font-mono">package.json</code>, then push to GitHub.
-                    </p>
-                    <div className="bg-slate-950 p-3 rounded font-mono text-xs text-slate-300 space-y-1">
-                      <div>git init</div>
-                      <div>git add server.js render.yaml package.json README.md</div>
-                      <div>git commit -m &quot;feat: Eaglercraft Minecraft TCP proxy&quot;</div>
-                      <div>git remote add origin https://github.com/YOUR_USER/minecraft-proxy.git</div>
-                      <div>git push -u origin main</div>
-                    </div>
-                  </div>
-                </div>
+              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-2">
+                <h3 className="text-base font-semibold text-white">1. Push Code to GitHub</h3>
+                <p className="text-xs text-slate-300">
+                  Push <code className="text-emerald-400 font-mono">server.js</code>,{' '}
+                  <code className="text-emerald-400 font-mono">render.yaml</code>, and{' '}
+                  <code className="text-emerald-400 font-mono">package.json</code> to your GitHub repository.
+                </p>
               </div>
 
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5">
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0">
-                    2
-                  </span>
-                  <div className="space-y-2">
-                    <h3 className="text-base font-semibold text-white">Create Blueprint on Render</h3>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Go to <a href="https://dashboard.render.com" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">dashboard.render.com</a>,
-                      click <strong>New +</strong>, then select <strong>Blueprint</strong>.
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      Render will parse your <code className="text-emerald-400 font-mono">render.yaml</code> and pre-configure
-                      the Web Service, health check, Node version, and environment variables.
-                    </p>
-                  </div>
-                </div>
+              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-2">
+                <h3 className="text-base font-semibold text-white">2. Deploy Blueprint on Render</h3>
+                <p className="text-xs text-slate-300">
+                  In Render Dashboard, click <strong>New +</strong> $\rightarrow$ <strong>Blueprint</strong> and connect your repository.
+                </p>
               </div>
 
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5">
-                <div className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0">
-                    3
-                  </span>
-                  <div className="space-y-2">
-                    <h3 className="text-base font-semibold text-white">Configure Environment Variables</h3>
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Set your Minecraft server host and port under the Environment tab:
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
-                      <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
-                        <span className="text-slate-400">TARGET_HOST:</span>{' '}
-                        <span className="text-emerald-400">myserver.aternos.me</span>
-                      </div>
-                      <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
-                        <span className="text-slate-400">TARGET_PORT:</span>{' '}
-                        <span className="text-emerald-400">25565</span> (or dynamic port)
-                      </div>
-                    </div>
-                  </div>
+              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-2">
+                <h3 className="text-base font-semibold text-white">3. Share Custom WSS with Players</h3>
+                <p className="text-xs text-slate-300">
+                  Tell your players to visit your site or connect directly using:
+                </p>
+                <div className="bg-slate-950 p-2.5 rounded font-mono text-emerald-400 text-xs select-all">
+                  wss://YOUR_RENDER_SERVICE.onrender.com/stone.aternos.me:38472
                 </div>
               </div>
-            </div>
-
-            {/* Health-check feature note */}
-            <div className="border border-emerald-500/30 rounded-xl bg-emerald-950/10 p-5 text-xs text-slate-300 space-y-2">
-              <div className="font-semibold text-emerald-300 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4" />
-                <span>Always-On Health-Check Configured</span>
-              </div>
-              <p>
-                The proxy includes an integrated HTTP endpoint at <code className="text-emerald-300 font-mono">GET /</code> that
-                returns <code className="text-emerald-300 font-mono">200 OK</code>. This matches the{' '}
-                <code className="text-emerald-300 font-mono">healthCheckPath: /</code> in <code className="text-emerald-300 font-mono">render.yaml</code>,
-                preventing Render health check failures and enabling uptime monitoring tools (such as UptimeRobot or BetterStack).
-              </p>
             </div>
           </div>
         )}
 
-        {/* TAB 5: ATERNOS GUIDE */}
+        {/* TAB 6: ATERNOS GUIDE */}
         {activeTab === 'aternos' && (
           <div className="max-w-4xl mx-auto space-y-6">
             <div>
-              <h2 className="font-display text-2xl font-bold text-white">Aternos Server Setup Guide</h2>
+              <h2 className="font-display text-2xl font-bold text-white">Aternos Server Configuration</h2>
               <p className="text-sm text-slate-400 mt-1">
-                Because Eaglercraft runs in a web browser, it uses cracked offline authentication and connects over WebSockets.
-                Here are the specific settings to make Aternos work with this proxy:
+                Aternos works seamlessly with this proxy as long as you follow these two rules:
               </p>
             </div>
 
             <div className="space-y-4">
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-3">
+              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-2">
                 <h3 className="text-base font-semibold text-white flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Step 1: Enable &quot;Cracked&quot; in Aternos</span>
+                  <span>Rule 1: Turn &quot;Cracked: ON&quot; in Aternos Options</span>
                 </h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Go to <strong>Options</strong> on your Aternos dashboard. Turn <strong>Cracked: ON</strong>.
+                <p className="text-xs text-slate-300">
+                  Browser Eaglercraft clients cannot authenticate with Microsoft/Mojang OAuth servers.
+                  Turning Cracked ON allows browser clients to connect offline.
                 </p>
-                <div className="text-xs text-amber-300 bg-amber-950/20 border border-amber-500/30 p-3 rounded">
-                  Why? Official Minecraft accounts authenticate via Microsoft OAuth with Mojang auth servers. Browser-based
-                  Eaglercraft clients cannot access standard Mojang auth tokens, so your server must accept cracked clients.
-                </div>
               </div>
 
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-3">
+              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-2">
                 <h3 className="text-base font-semibold text-white flex items-center gap-2">
                   <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Step 2: Check Your Dynamic Port</span>
+                  <span>Rule 2: Copy the Dynamic Port, NOT 25565</span>
                 </h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  When starting an Aternos server, click on <strong>Connect</strong> to see your DynIP and port:
+                <p className="text-xs text-slate-300">
+                  When starting your server, click the <strong>Connect</strong> button on Aternos. It will display a dynamic port (e.g. <code>stone.aternos.me:38472</code>).
+                  Enter that exact port into the WSS Generator!
                 </p>
-                <div className="bg-slate-950 p-3 rounded font-mono text-xs text-slate-300">
-                  <div>Example Address: stone.aternos.me:38472</div>
-                  <div className="text-slate-500 mt-1">
-                    &bull; TARGET_HOST = stone.aternos.me<br />
-                    &bull; TARGET_PORT = 38472 (Notice: NOT 25565)
-                  </div>
-                </div>
-              </div>
-
-              <div className="border border-slate-800 rounded-xl bg-slate-900/40 p-5 space-y-3">
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Step 3: Compatible Minecraft Versions</span>
-                </h3>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  Most Eaglercraft clients run on protocol versions 1.5.2 or 1.8.8. For best compatibility:
-                </p>
-                <ul className="text-xs text-slate-300 list-disc list-inside space-y-1">
-                  <li>Use Paper or Spigot 1.8.8 if using Eaglercraft 1.8.8</li>
-                  <li>Or install <strong>ViaVersion</strong> and <strong>ViaBackwards</strong> plugins on newer servers (1.20+) to allow 1.8 clients to join</li>
-                  <li>Or use <strong>EaglerXBungee</strong> plugin for BungeeCord/Waterfall networks</li>
-                </ul>
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB 6: LIVE CONSOLE LOGS */}
+        {/* TAB 7: LIVE LOGS */}
         {activeTab === 'logs' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -904,9 +1208,9 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-6 text-xs text-slate-500 text-center">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div>Eaglercraft Minecraft TCP &harr; WebSocket Proxy · MIT License</div>
+          <div>EaglerProxy · Dynamic Minecraft TCP &harr; WebSocket Bridge</div>
           <div className="flex items-center gap-4 text-slate-400">
-            <span>Node.js net + ws</span>
+            <span>Dynamic URL Routing</span>
             <span aria-hidden="true">·</span>
             <span>Render Blueprint Ready</span>
           </div>
